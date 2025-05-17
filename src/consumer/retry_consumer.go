@@ -21,7 +21,8 @@ const (
 )
 
 type RetryConsumer struct {
-	kafkaConsumer    *kafka.Consumer
+	mainConsumer     *kafka.Consumer
+	retryConsumer    *kafka.Consumer
 	options          []types.Option
 	producer         types.SingleProducer
 	topics           []string
@@ -35,7 +36,7 @@ type RetryConsumer struct {
 	bootstrapServers string
 }
 
-func NewRetryConsumer(kafkaConsumer *kafka.Consumer, producer types.SingleProducer,
+func NewRetryConsumer(mainConsumer *kafka.Consumer, retryConsumer *kafka.Consumer, producer types.SingleProducer,
 	bootstrapServers string, options []types.Option, topics []string,
 	groupID string, retryInterval int) *RetryConsumer {
 
@@ -48,17 +49,26 @@ func NewRetryConsumer(kafkaConsumer *kafka.Consumer, producer types.SingleProduc
 	retryTopic := fmt.Sprintf("%s-%s-retry-%dS", topics[0], groupID, retryInterval)
 	dlqTopic := fmt.Sprintf("%s-%s-dlq", topics[0], groupID)
 
-	allTopics := slices.Clone(topics)
-	allTopics = append(allTopics, retryTopic)
-
-	err := kafkaConsumer.SubscribeTopics(allTopics, nil)
+	// Subscribe main consumer to main topics
+	err := mainConsumer.SubscribeTopics(topics, nil)
 	if err != nil {
 		cancel()
 		return nil
 	}
 
+	// Subscribe retry consumer to retry topic
+	err = retryConsumer.SubscribeTopics([]string{retryTopic}, nil)
+	if err != nil {
+		cancel()
+		return nil
+	}
+
+	allTopics := slices.Clone(topics)
+	allTopics = append(allTopics, retryTopic)
+
 	return &RetryConsumer{
-		kafkaConsumer:    kafkaConsumer,
+		mainConsumer:     mainConsumer,
+		retryConsumer:    retryConsumer,
 		producer:         producer,
 		options:          options,
 		topics:           allTopics,
@@ -85,16 +95,30 @@ func (c *RetryConsumer) GroupID() string {
 	return c.groupID
 }
 
-func (c *RetryConsumer) ReadMessage(ctx context.Context, timeoutMs int) (*message.Message, error) {
-	msg, err := c.kafkaConsumer.ReadMessage(time.Duration(timeoutMs) * time.Millisecond)
+func (c *RetryConsumer) ReadMessage(ctx context.Context, timeoutMs int, isRetry bool) (*message.Message, error) {
+	var consumer *kafka.Consumer
+	if isRetry {
+		consumer = c.retryConsumer
+	} else {
+		consumer = c.mainConsumer
+	}
+
+	msg, err := consumer.ReadMessage(time.Duration(timeoutMs) * time.Millisecond)
 	if err != nil {
 		return nil, err
 	}
 	return message.NewMessage(msg), nil
 }
 
-func (c *RetryConsumer) Commit() error {
-	_, err := c.kafkaConsumer.Commit()
+func (c *RetryConsumer) Commit(isRetry bool) error {
+	var consumer *kafka.Consumer
+	if isRetry {
+		consumer = c.retryConsumer
+	} else {
+		consumer = c.mainConsumer
+	}
+
+	_, err := consumer.Commit()
 	return err
 }
 
@@ -104,22 +128,41 @@ func (c *RetryConsumer) Subscribe(handler types.Handler) error {
 }
 
 func (c *RetryConsumer) consumeMessages(handler types.Handler) {
+	// Start two goroutines, one for main messages and one for retry messages
+	go c.consumeMainMessages(handler)
+	go c.consumeRetryMessages(handler)
+}
+
+func (c *RetryConsumer) consumeMainMessages(handler types.Handler) {
 	running := true
 	for running {
 		select {
 		case <-c.ctx.Done():
 			running = false
 		default:
-			msg, err := c.ReadMessage(c.ctx, 1000)
+			msg, err := c.ReadMessage(c.ctx, 100, false)
 			if err != nil {
 				continue
 			}
 
-			if isRetryMessage(msg) {
-				c.handleRetryMessage(msg, handler)
-			} else {
-				c.processMessage(msg, handler)
+			c.processMessage(msg, handler)
+		}
+	}
+}
+
+func (c *RetryConsumer) consumeRetryMessages(handler types.Handler) {
+	running := true
+	for running {
+		select {
+		case <-c.ctx.Done():
+			running = false
+		default:
+			msg, err := c.ReadMessage(c.ctx, 100, true)
+			if err != nil {
+				continue
 			}
+
+			c.handleRetryMessage(msg, handler)
 		}
 	}
 }
@@ -257,5 +300,14 @@ func (c *RetryConsumer) SetMaxRetries(maxRetries int) {
 
 func (c *RetryConsumer) Close() error {
 	c.cancelCtx()
-	return c.kafkaConsumer.Close()
+
+	// Close both consumers
+	mainErr := c.mainConsumer.Close()
+	retryErr := c.retryConsumer.Close()
+
+	// Return first error encountered
+	if mainErr != nil {
+		return mainErr
+	}
+	return retryErr
 }

@@ -21,12 +21,16 @@ type SingleProducerBuilder struct {
 	EnableIdempotence                bool
 	MaxInFlightRequestsPerConnection int
 	LingerMs                         int
+	ConnectionTimeout                int // Timeout en ms para verificar la conexión
+	ConnectionRetryInterval          int // Intervalo en ms entre intentos de conexión
 }
 
 func NewSingleProducerBuilder(name, bootstrapServers string) *SingleProducerBuilder {
 	return &SingleProducerBuilder{
-		Name:             name,
-		BootstrapServers: bootstrapServers,
+		Name:                    name,
+		BootstrapServers:        bootstrapServers,
+		ConnectionTimeout:       10000, // 10 segundos por defecto
+		ConnectionRetryInterval: 500,   // 500ms por defecto
 	}
 }
 
@@ -57,6 +61,20 @@ func (b *SingleProducerBuilder) SetMaxInFlightRequestsPerConnection(val int) *Si
 
 func (b *SingleProducerBuilder) SetLingerMs(val int) *SingleProducerBuilder {
 	b.LingerMs = val
+	return b
+}
+
+func (b *SingleProducerBuilder) SetConnectionTimeout(timeoutMs int) *SingleProducerBuilder {
+	if timeoutMs > 0 {
+		b.ConnectionTimeout = timeoutMs
+	}
+	return b
+}
+
+func (b *SingleProducerBuilder) SetConnectionRetryInterval(intervalMs int) *SingleProducerBuilder {
+	if intervalMs > 0 {
+		b.ConnectionRetryInterval = intervalMs
+	}
 	return b
 }
 
@@ -99,5 +117,17 @@ func (b *SingleProducerBuilder) Build() (types.SingleProducer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return producer.NewSingleProducer(b.Name, kafkaProducer, utils.MapConfigMapToOptions(config)), nil
+
+	// Crear el productor
+	singleProducer := producer.NewSingleProducer(b.Name, kafkaProducer, utils.MapConfigMapToOptions(config))
+
+	// Verificar la conexión a Kafka antes de devolver el productor
+	err = singleProducer.WaitForConnection(b.ConnectionTimeout, b.ConnectionRetryInterval)
+	if err != nil {
+		// Cerrar el productor si no se pudo conectar
+		singleProducer.Close()
+		return nil, fmt.Errorf("no se pudo establecer conexión con Kafka: %w", err)
+	}
+
+	return singleProducer, nil
 }
