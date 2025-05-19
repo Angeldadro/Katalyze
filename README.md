@@ -25,10 +25,16 @@ go get github.com/Angeldadro/Katalyze
 ## 🧩 Componentes principales
 
 - **Client**: Punto de entrada principal para administrar productores y consumidores
+  - Registro automático de tópicos al registrar productores y consumidores
+  - Gestión de ciclo de vida para recursos Kafka
 - **Producers**: Diferentes tipos de productores (Single, Response)
 - **Consumers**: Varios tipos de consumidores (Single, Response, Retry)
 - **AdminClient**: Para administrar tópicos y recursos de Kafka
+  - Creación, eliminación y listado de tópicos
+  - Gestión centralizada de recursos del clúster
 - **Builders**: Para construir fácilmente los componentes con configuración fluida
+  - ClientBuilder: Configuración del cliente principal
+  - ProducerBuilder, ConsumerBuilder: Configuración fluida para componentes
 - **Helpers**: Ayudantes para crear productores y consumidores con configuraciones predeterminadas
 
 ## 🔰 Ejemplos de uso
@@ -82,21 +88,84 @@ retryConsumer.Subscribe(func(msg types.Message) error {
 })
 ```
 
+### Registro de tópicos y administración con Client
+
+```go
+// Crear AdminClient para gestionar tópicos y recursos Kafka
+adminConfig := kafka.ConfigMap{
+    "bootstrap.servers": "localhost:9092",
+}
+
+kafkaAdminClient, err := kafka.NewAdminClient(&adminConfig)
+if err != nil {
+    log.Fatalf("Error creando AdminClient de Kafka: %v", err)
+}
+
+// Inicializar nuestro AdminClient personalizado
+adminClient, err := admin.NewKafkaAdminClient(kafkaAdminClient, nil)
+if err != nil {
+    log.Fatalf("Error creando AdminClient: %v", err)
+}
+
+// Configurar cliente usando ClientBuilder
+client, err := client_builder.NewClientBuilder().
+    SetClientId("my-client").
+    SetAdminClient(adminClient).
+    Build()
+if err != nil {
+    log.Fatalf("Error al crear cliente: %v", err)
+}
+
+// Registrar productor - el cliente creará automáticamente los tópicos necesarios
+producer, err := producer_helper.CreateDefaultProducer("localhost:9092", "my-producer-id", producer_helper.PresetDefault)
+if err != nil {
+    log.Fatalf("Error al crear productor: %v", err)
+}
+
+// Registrar productor con el cliente - esto creará el tópico si no existe
+err = client.RegisterProducer(producer)
+if err != nil {
+    log.Fatalf("Error al registrar productor: %v", err)
+}
+
+// Para consumidores con retries, todos los tópicos se crean automáticamente
+retryConsumer, err := consumer_helper.CreateRetryConsumer(config)
+if err != nil {
+    log.Fatalf("Error al crear RetryConsumer: %v", err)
+}
+
+// Registrar consumidor - se crearán automáticamente:
+// - Tópicos principales
+// - Tópico de reintentos
+// - Tópico DLQ
+err = client.RegisterConsumer(retryConsumer)
+if err != nil {
+    log.Fatalf("Error al registrar consumidor: %v", err)
+}
+```
+
 ### Patrón de Request/Response
 
 ```go
 // Configurar cliente
-client, err := client_builder.NewClientBuilder("my-client")
-    .SetBootstrapServers("localhost:9092")
-    .Build()
+client, err := client_builder.NewClientBuilder().
+    SetClientId("my-client").
+    SetAdminClient(adminClient).
+    Build()
 if err != nil {
     log.Fatalf("Error al crear cliente: %v", err)
 }
 
 // Crear productor para solicitudes
-producer, err := client.CreateResponseProducer("requester", "request-topic")
+producer, err := producer_helper.CreateResponseProducer("localhost:9092", "requester", "request-topic")
 if err != nil {
     log.Fatalf("Error al crear productor: %v", err)
+}
+
+// Registrar con el cliente - se crearán los tópicos automáticamente
+err = client.RegisterResponseProducer(producer)
+if err != nil {
+    log.Fatalf("Error al registrar productor: %v", err)
 }
 
 // Enviar solicitud y esperar respuesta (con timeout)
@@ -157,6 +226,36 @@ El `RetryConsumer` ofrece reintentos automáticos para mensajes fallidos:
                   │  Retry Topic  │   
                   └───────────────┘    
 ```
+
+## 📊 Administración de tópicos
+
+El componente `AdminClient` proporciona una interfaz para gestionar tópicos en Kafka:
+
+```go
+// Obtener la instancia AdminClient desde un cliente existente
+adminClient := client.GetAdmin()
+
+// Crear un tópico manualmente (particiones, factor de replicación)
+err := adminClient.CreateTopic("new-topic", 3, 1)
+if err != nil {
+    log.Fatalf("Error al crear tópico: %v", err)
+}
+
+// Listar tópicos existentes
+topics, err := adminClient.ListTopics()
+if err != nil {
+    log.Fatalf("Error al listar tópicos: %v", err)
+}
+fmt.Printf("Tópicos disponibles: %v\n", topics)
+
+// Eliminar un tópico
+err = adminClient.DeleteTopic("topic-to-delete")
+if err != nil {
+    log.Fatalf("Error al eliminar tópico: %v", err)
+}
+```
+
+Nota: El cliente principal (`Client`) utiliza `AdminClient` internamente para gestionar automáticamente la creación de tópicos cuando se registran productores y consumidores, incluyendo tópicos especiales para reintentos y DLQ.
 
 ## 🤝 Contribuir
 
