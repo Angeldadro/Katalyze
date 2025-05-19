@@ -101,15 +101,7 @@ func enviarMensajeEjemplo(producer types.SingleProducer, topic string) {
 		log.Printf("Error al enviar mensaje: %v", err)
 		return
 	}
-
-	// Hacer flush para asegurar que el mensaje se envía inmediatamente
-	pendingCount := producer.Flush(1000) // 1 segundo de timeout
-
-	if pendingCount > 0 {
-		fmt.Printf("Advertencia: %d mensajes aún pendientes después del flush\n", pendingCount)
-	} else {
-		fmt.Printf("Mensaje enviado correctamente al tópico '%s'\n", topic)
-		fmt.Printf("  ID: %s\n", msg.ID)
-		fmt.Printf("  Timestamp: %s\n", msg.Timestamp.Format(time.RFC3339))
-	}
+	fmt.Printf("Mensaje enviado correctamente al tópico '%s'\n", topic)
+	fmt.Printf("  ID: %s\n", msg.ID)
+	fmt.Printf("  Timestamp: %s\n", msg.Timestamp.Format(time.RFC3339))
 }

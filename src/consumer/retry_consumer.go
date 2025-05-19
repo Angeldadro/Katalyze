@@ -2,7 +2,9 @@ package consumer
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"slices"
 	"strconv"
 	"time"
@@ -48,20 +50,6 @@ func NewRetryConsumer(mainConsumer *kafka.Consumer, retryConsumer *kafka.Consume
 
 	retryTopic := fmt.Sprintf("%s-%s-retry-%dS", topics[0], groupID, retryInterval)
 	dlqTopic := fmt.Sprintf("%s-%s-dlq", topics[0], groupID)
-
-	// Subscribe main consumer to main topics
-	err := mainConsumer.SubscribeTopics(topics, nil)
-	if err != nil {
-		cancel()
-		return nil
-	}
-
-	// Subscribe retry consumer to retry topic
-	err = retryConsumer.SubscribeTopics([]string{retryTopic}, nil)
-	if err != nil {
-		cancel()
-		return nil
-	}
 
 	allTopics := slices.Clone(topics)
 	allTopics = append(allTopics, retryTopic)
@@ -122,7 +110,70 @@ func (c *RetryConsumer) Commit(isRetry bool) error {
 	return err
 }
 
+// waitForConsumerConnection espera a que un consumidor específico esté conectado a Kafka
+// timeout es la duración máxima a esperar en milisegundos
+// retorna error si no se puede conectar en el tiempo especificado
+func waitForConsumerConnection(consumer *kafka.Consumer, topics []string, timeout int) error {
+	if consumer == nil {
+		return errors.New("kafka consumer no inicializado")
+	}
+
+	// Primero intenta suscribirse a los tópicos
+	err := consumer.SubscribeTopics(topics, nil)
+	if err != nil {
+		return err
+	}
+
+	// Define un contexto con timeout para limitar el tiempo de espera
+	timeoutDuration := time.Duration(timeout) * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutDuration)
+	defer cancel()
+
+	// Intervalo de verificación
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return errors.New("timeout esperando la conexión a Kafka")
+		case <-tick.C:
+			// Intenta obtener los metadatos para comprobar la conexión
+			metadata, err := consumer.GetMetadata(nil, true, int(timeoutDuration.Milliseconds()))
+			if err == nil && len(metadata.Brokers) > 0 {
+				// Conectado exitosamente
+				return nil
+			}
+		}
+	}
+}
+
+// WaitForConnection espera a que ambos consumidores (main y retry) estén conectados a Kafka
+func (c *RetryConsumer) WaitForConnection(timeout int) error {
+	log.Println("Esperando conexión para el consumidor principal...")
+	err := waitForConsumerConnection(c.mainConsumer, c.topics[:len(c.topics)-1], timeout)
+	if err != nil {
+		return fmt.Errorf("error al conectar el consumidor principal: %w", err)
+	}
+
+	log.Println("Esperando conexión para el consumidor de reintentos...")
+	retryTopics := []string{c.retryTopic}
+	err = waitForConsumerConnection(c.retryConsumer, retryTopics, timeout)
+	if err != nil {
+		return fmt.Errorf("error al conectar el consumidor de reintentos: %w", err)
+	}
+
+	log.Println("RetryConsumer conectado a Kafka exitosamente")
+	return nil
+}
+
 func (c *RetryConsumer) Subscribe(handler types.Handler) error {
+	// Esperar a que ambos consumidores estén conectados antes de iniciar el consumo
+	err := c.WaitForConnection(30000) // 30 segundos de timeout
+	if err != nil {
+		return err
+	}
+
 	go c.consumeMessages(handler)
 	return nil
 }

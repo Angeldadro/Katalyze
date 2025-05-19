@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -77,9 +78,50 @@ func (c *ResponseConsumer) GroupID() string {
 	return c.groupID
 }
 
+// WaitForConnection espera a que el consumidor esté conectado a Kafka
+// timeout es la duración máxima a esperar en milisegundos
+// retorna error si no se puede conectar en el tiempo especificado
+func (c *ResponseConsumer) WaitForConnection(timeout int) error {
+	if c.kafkaConsumer == nil {
+		return errors.New("kafka consumer no inicializado")
+	}
+
+	// Primero intenta suscribirse a los tópicos
+	err := c.kafkaConsumer.SubscribeTopics(c.topics, nil)
+	if err != nil {
+		return err
+	}
+
+	// Define un contexto con timeout para limitar el tiempo de espera
+	timeoutDuration := time.Duration(timeout) * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutDuration)
+	defer cancel()
+
+	// Intervalo de verificación
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return errors.New("timeout esperando la conexión a Kafka")
+		case <-tick.C:
+			// Intenta obtener los metadatos para comprobar la conexión
+			metadata, err := c.kafkaConsumer.GetMetadata(nil, true, int(timeoutDuration.Milliseconds()))
+			if err == nil && len(metadata.Brokers) > 0 {
+				// Conectado exitosamente
+				log.Println("ResponseConsumer conectado a Kafka exitosamente")
+				return nil
+			}
+		}
+	}
+}
+
 // Subscribe inicia la suscripción a los tópicos con un handler para procesar las respuestas
 func (c *ResponseConsumer) Subscribe(handler types.ResponseHandler) error {
-	if err := c.kafkaConsumer.SubscribeTopics(c.topics, nil); err != nil {
+	// Esperar a que esté conectado antes de iniciar el consumo
+	err := c.WaitForConnection(30000) // 30 segundos de timeout
+	if err != nil {
 		return err
 	}
 

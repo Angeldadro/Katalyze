@@ -2,12 +2,16 @@ package consumer
 
 import (
 	"context"
-	"log"
+	"errors"
 	"time"
 
 	"github.com/Angeldadro/Katalyze/src/message"
 	"github.com/Angeldadro/Katalyze/src/types"
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+)
+
+const (
+	DefaultConnectionTimeout = 30000
 )
 
 // KafkaConsumer implementa la interfaz SingleConsumer usando confluent-kafka-go
@@ -23,10 +27,7 @@ type SingleConsumer struct {
 
 func NewConsumer(kafkaConsumer *kafka.Consumer, options []types.Option, topics []string, groupID string) *SingleConsumer {
 	ctx, cancel := context.WithCancel(context.Background())
-	err := kafkaConsumer.SubscribeTopics(topics, nil)
-	if err != nil {
-		log.Println(err)
-	}
+
 	return &SingleConsumer{
 		kafkaConsumer: kafkaConsumer,
 		options:       options,
@@ -46,7 +47,51 @@ func (c *SingleConsumer) SetKafkaConsumer(kafkaConsumer *kafka.Consumer) *Single
 	return c
 }
 
+// WaitForConnection espera a que el consumidor esté conectado a Kafka
+// timeout es la duración máxima a esperar en milisegundos
+// retorna error si no se puede conectar en el tiempo especificado
+func (c *SingleConsumer) WaitForConnection(timeout int) error {
+	if c.kafkaConsumer == nil {
+		return errors.New("kafka consumer no inicializado")
+	}
+
+	// Primero intenta suscribirse a los tópicos
+	err := c.kafkaConsumer.SubscribeTopics(c.topics, nil)
+	if err != nil {
+		return err
+	}
+
+	// Define un contexto con timeout para limitar el tiempo de espera
+	timeoutDuration := time.Duration(timeout) * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutDuration)
+	defer cancel()
+
+	// Intervalo de verificación
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return errors.New("timeout esperando la conexión a Kafka")
+		case <-tick.C:
+			// Intenta obtener los metadatos para comprobar la conexión
+			metadata, err := c.kafkaConsumer.GetMetadata(nil, true, int(timeoutDuration.Milliseconds()))
+			if err == nil && len(metadata.Brokers) > 0 {
+				// Conectado exitosamente
+				return nil
+			}
+		}
+	}
+}
+
 func (c *SingleConsumer) Subscribe(handler types.Handler) error {
+	// Esperar a que esté conectado antes de iniciar el consumo
+	err := c.WaitForConnection(DefaultConnectionTimeout)
+	if err != nil {
+		return err
+	}
+
 	go func() {
 		for {
 			select {

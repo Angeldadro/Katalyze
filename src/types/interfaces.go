@@ -16,9 +16,6 @@ type SingleProducer interface {
 	Producer
 	Produce(topic string, key string, value []byte) error
 	ProduceWithHeaders(topic string, key []byte, value []byte, headers []Header) error
-	// WaitForConnection espera a que la conexión a Kafka esté establecida
-	// timeout es el tiempo máximo de espera en milisegundos
-	// retryInterval es el intervalo entre intentos en milisegundos
 	WaitForConnection(timeout, retryInterval int) error
 }
 type ResponseProducer interface {
