@@ -1,3 +1,4 @@
+// Archivo: Katalyze/src/builders/producer/response_producer_builder.go
 package producer_builder
 
 import (
@@ -14,6 +15,7 @@ type ResponseProducerBuilder struct {
 	bootstrapServers string
 	acks             producer_types.Acks
 	replyTopic       string
+	config           map[string]interface{} // <-- AÑADIDO: Campo para configuración personalizada
 }
 
 // NewResponseProducerBuilder crea un nuevo ResponseProducerBuilder
@@ -22,6 +24,7 @@ func NewResponseProducerBuilder(bootstrapServers string, name string) *ResponseP
 		name:             name,
 		bootstrapServers: bootstrapServers,
 		acks:             producer_types.AcksAll,
+		config:           make(map[string]interface{}), // <-- AÑADIDO: Inicializar el mapa
 	}
 }
 
@@ -37,6 +40,12 @@ func (b *ResponseProducerBuilder) SetReplyTopic(replyTopic string) *ResponseProd
 	return b
 }
 
+// SetConfig permite añadir una configuración personalizada al productor. <-- AÑADIDO
+func (b *ResponseProducerBuilder) SetConfig(key string, value interface{}) *ResponseProducerBuilder {
+	b.config[key] = value
+	return b
+}
+
 // Build construye y retorna un ResponseProducer
 func (b *ResponseProducerBuilder) Build() (types.ResponseProducer, error) {
 	// Crear configuración básica para el productor
@@ -45,6 +54,13 @@ func (b *ResponseProducerBuilder) Build() (types.ResponseProducer, error) {
 		"client.id":         b.name,
 		"acks":              string(b.acks),
 	}
+
+	// --- LÍNEAS AÑADIDAS ---
+	// Aplicar la configuración personalizada
+	for key, value := range b.config {
+		(*config)[key] = value
+	}
+	// --- FIN DE LÍNEAS AÑADIDAS ---
 
 	// Crear productor de Kafka
 	kafkaProducer, err := kafka.NewProducer(config)
