@@ -12,24 +12,22 @@ import (
 
 // ResponseProducerBuilder es el builder para ResponseProducer
 type ResponseProducerBuilder struct {
-	name             string
-	bootstrapServers string
-	acks             producer_types.Acks
-	replyTopic       string
-	// --- BLOQUE AÑADIDO ---
-	// Hacemos que el timeout de conexión sea configurable.
+	name              string
+	bootstrapServers  string
+	acks              producer_types.Acks
+	replyTopic        string
 	ConnectionTimeout int
-	// --- FIN DEL BLOQUE AÑADIDO ---
+	config            map[string]interface{} // Campo para configuración personalizada
 }
 
 // NewResponseProducerBuilder crea un nuevo ResponseProducerBuilder
 func NewResponseProducerBuilder(bootstrapServers string, name string) *ResponseProducerBuilder {
 	return &ResponseProducerBuilder{
-		name:             name,
-		bootstrapServers: bootstrapServers,
-		acks:             producer_types.AcksAll,
-		// --- LÍNEA AÑADIDA ---
+		name:              name,
+		bootstrapServers:  bootstrapServers,
+		acks:              producer_types.AcksAll,
 		ConnectionTimeout: 10000, // 10 segundos por defecto
+		config:            make(map[string]interface{}),
 	}
 }
 
@@ -45,7 +43,6 @@ func (b *ResponseProducerBuilder) SetReplyTopic(replyTopic string) *ResponseProd
 	return b
 }
 
-// --- BLOQUE AÑADIDO ---
 // SetConnectionTimeout permite al usuario configurar el tiempo de espera.
 func (b *ResponseProducerBuilder) SetConnectionTimeout(timeoutMs int) *ResponseProducerBuilder {
 	if timeoutMs > 0 {
@@ -54,7 +51,14 @@ func (b *ResponseProducerBuilder) SetConnectionTimeout(timeoutMs int) *ResponseP
 	return b
 }
 
-// --- FIN DEL BLOQUE AÑADIDO ---
+// --- MÉTODO AÑADIDO (DE VUELTA) ---
+// SetConfig permite añadir una configuración personalizada al productor.
+func (b *ResponseProducerBuilder) SetConfig(key string, value interface{}) *ResponseProducerBuilder {
+	b.config[key] = value
+	return b
+}
+
+// --- FIN DEL MÉTODO AÑADIDO ---
 
 // Build construye y retorna un ResponseProducer
 func (b *ResponseProducerBuilder) Build() (types.ResponseProducer, error) {
@@ -62,6 +66,11 @@ func (b *ResponseProducerBuilder) Build() (types.ResponseProducer, error) {
 		"bootstrap.servers": b.bootstrapServers,
 		"client.id":         b.name,
 		"acks":              string(b.acks),
+	}
+
+	// Aplicar la configuración personalizada
+	for key, value := range b.config {
+		(*config)[key] = value
 	}
 
 	kafkaProducer, err := kafka.NewProducer(config)
@@ -88,13 +97,10 @@ func (b *ResponseProducerBuilder) Build() (types.ResponseProducer, error) {
 		return nil, err
 	}
 
-	// --- BLOQUE AÑADIDO: LA SOLUCIÓN FINAL ---
-	// Antes de devolver el productor, nos aseguramos de que esté completamente conectado.
 	if err := responseProducer.WaitForConnection(b.ConnectionTimeout); err != nil {
-		responseProducer.Close() // Limpiamos los recursos si la conexión falla.
+		responseProducer.Close()
 		return nil, fmt.Errorf("no se pudo establecer conexión para ResponseProducer: %w", err)
 	}
-	// --- FIN DEL BLOQUE AÑADIDO ---
 
 	return responseProducer, nil
 }
