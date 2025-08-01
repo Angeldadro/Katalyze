@@ -1,7 +1,8 @@
-// Archivo: Katalyze/src/builders/producer/response_producer_builder.go
 package producer_builder
 
 import (
+	"fmt"
+
 	producer_types "github.com/Angeldadro/Katalyze/src/builders/producer/types"
 	"github.com/Angeldadro/Katalyze/src/producer"
 	"github.com/Angeldadro/Katalyze/src/types"
@@ -15,7 +16,10 @@ type ResponseProducerBuilder struct {
 	bootstrapServers string
 	acks             producer_types.Acks
 	replyTopic       string
-	config           map[string]interface{} // <-- AÑADIDO: Campo para configuración personalizada
+	// --- BLOQUE AÑADIDO ---
+	// Hacemos que el timeout de conexión sea configurable.
+	ConnectionTimeout int
+	// --- FIN DEL BLOQUE AÑADIDO ---
 }
 
 // NewResponseProducerBuilder crea un nuevo ResponseProducerBuilder
@@ -24,7 +28,8 @@ func NewResponseProducerBuilder(bootstrapServers string, name string) *ResponseP
 		name:             name,
 		bootstrapServers: bootstrapServers,
 		acks:             producer_types.AcksAll,
-		config:           make(map[string]interface{}), // <-- AÑADIDO: Inicializar el mapa
+		// --- LÍNEA AÑADIDA ---
+		ConnectionTimeout: 10000, // 10 segundos por defecto
 	}
 }
 
@@ -40,49 +45,56 @@ func (b *ResponseProducerBuilder) SetReplyTopic(replyTopic string) *ResponseProd
 	return b
 }
 
-// SetConfig permite añadir una configuración personalizada al productor. <-- AÑADIDO
-func (b *ResponseProducerBuilder) SetConfig(key string, value interface{}) *ResponseProducerBuilder {
-	b.config[key] = value
+// --- BLOQUE AÑADIDO ---
+// SetConnectionTimeout permite al usuario configurar el tiempo de espera.
+func (b *ResponseProducerBuilder) SetConnectionTimeout(timeoutMs int) *ResponseProducerBuilder {
+	if timeoutMs > 0 {
+		b.ConnectionTimeout = timeoutMs
+	}
 	return b
 }
 
+// --- FIN DEL BLOQUE AÑADIDO ---
+
 // Build construye y retorna un ResponseProducer
 func (b *ResponseProducerBuilder) Build() (types.ResponseProducer, error) {
-	// Crear configuración básica para el productor
 	config := &kafka.ConfigMap{
 		"bootstrap.servers": b.bootstrapServers,
 		"client.id":         b.name,
 		"acks":              string(b.acks),
 	}
 
-	// --- LÍNEAS AÑADIDAS ---
-	// Aplicar la configuración personalizada
-	for key, value := range b.config {
-		(*config)[key] = value
-	}
-	// --- FIN DE LÍNEAS AÑADIDAS ---
-
-	// Crear productor de Kafka
 	kafkaProducer, err := kafka.NewProducer(config)
 	if err != nil {
 		return nil, err
 	}
 
-	// Determinar el topic de respuesta si no se ha especificado
 	replyTopic := b.replyTopic
 	if replyTopic == "" {
 		replyTopic = b.name + "-reply"
 	}
 
-	// Convertir ConfigMap a Options
 	options := utils.MapConfigMapToOptions(config)
 
-	// Crear y retornar ResponseProducer
-	return producer.NewResponseProducer(
+	responseProducer, err := producer.NewResponseProducer(
 		b.name,
 		b.bootstrapServers,
 		kafkaProducer,
 		replyTopic,
 		options,
 	)
+	if err != nil {
+		kafkaProducer.Close()
+		return nil, err
+	}
+
+	// --- BLOQUE AÑADIDO: LA SOLUCIÓN FINAL ---
+	// Antes de devolver el productor, nos aseguramos de que esté completamente conectado.
+	if err := responseProducer.WaitForConnection(b.ConnectionTimeout); err != nil {
+		responseProducer.Close() // Limpiamos los recursos si la conexión falla.
+		return nil, fmt.Errorf("no se pudo establecer conexión para ResponseProducer: %w", err)
+	}
+	// --- FIN DEL BLOQUE AÑADIDO ---
+
+	return responseProducer, nil
 }

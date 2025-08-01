@@ -22,6 +22,9 @@ type ResponseProducer interface {
 	Producer
 	Produce(topic string, key, value []byte, timeoutMs int) ([]byte, error)
 	GetReplyTopic() (string, error)
+	// --- LÍNEA AÑADIDA ---
+	// Exigimos que el ResponseProducer también pueda esperar por una conexión.
+	WaitForConnection(timeoutMs int) error
 }
 
 type Handler func(msg Message) error

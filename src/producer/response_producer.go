@@ -9,7 +9,7 @@ import (
 	"github.com/Angeldadro/Katalyze/src/types"
 	"github.com/Angeldadro/Katalyze/src/utils"
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
-	"github.com/google/uuid"
+	"github.comcom/google/uuid"
 )
 
 const (
@@ -17,7 +17,7 @@ const (
 	HeaderReplyTo       = "replyTo"
 )
 
-// KafkaProducer implementa la interfaz Producer usando confluent-kafka-go
+// ResponseProducer implementa la interfaz Producer usando confluent-kafka-go
 type ResponseProducer struct {
 	name              string
 	bootstrapServers  string
@@ -25,7 +25,7 @@ type ResponseProducer struct {
 	responsesConsumer types.SingleConsumer
 	replyTopic        string
 	options           []types.Option
-	futures           *utils.TypedSyncMap[string, types.MessageFuture] // map de futures para manejar las respuestas donde key es el correlationId
+	futures           *utils.TypedSyncMap[string, types.MessageFuture]
 }
 
 func NewResponseProducer(name string, bootstrapServers string, kafkaProducer *kafka.Producer, replyTopic string, options []types.Option) (types.ResponseProducer, error) {
@@ -55,11 +55,48 @@ func NewResponseProducer(name string, bootstrapServers string, kafkaProducer *ka
 	responseProducer.startConsumer()
 	return responseProducer, nil
 }
+
+// --- BLOQUE AÑADIDO ---
+// WaitForConnection garantiza que tanto el productor como el consumidor interno
+// estén conectados y listos para operar.
+func (p *ResponseProducer) WaitForConnection(timeoutMs int) error {
+	timeout := time.Duration(timeoutMs) * time.Millisecond
+	start := time.Now()
+
+	// 1. Esperar al productor
+	// Usamos la técnica de `Flush` para verificar la conectividad del productor.
+	for {
+		if time.Since(start) > timeout {
+			return fmt.Errorf("timeout esperando conexión del productor interno en ResponseProducer")
+		}
+		// Flush con un timeout pequeño. Si devuelve 0, significa que no hay mensajes
+		// pendientes y la conexión está establecida.
+		if pending := p.kafkaProducer.Flush(100); pending == 0 {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// 2. Esperar al consumidor de respuestas
+	// El tiempo restante del timeout general se usa para el consumidor.
+	remainingTimeout := timeout - time.Since(start)
+	if remainingTimeout <= 0 {
+		return fmt.Errorf("timeout agotado antes de conectar el consumidor de respuestas")
+	}
+
+	// Reutilizamos la lógica robusta de WaitForConnection del SingleConsumer.
+	// El tipo concreto de p.responsesConsumer es *consumer.SingleConsumer
+	if singleConsumer, ok := p.responsesConsumer.(interface{ WaitForConnection(int) error }); ok {
+		return singleConsumer.WaitForConnection(int(remainingTimeout.Milliseconds()))
+	}
+
+	return fmt.Errorf("el consumidor de respuestas no implementa WaitForConnection")
+}
+
+// --- FIN DEL BLOQUE AÑADIDO ---
+
 func (p *ResponseProducer) startConsumer() {
 	p.responsesConsumer.Subscribe(func(msg types.Message) error {
-
-		// Procesando mensaje de respuesta
-		// Verificar si el mensaje tiene headers y procesar solo si hay un correlationID
 		var correlationID string
 		if len(msg.Headers()) > 0 {
 			header := utils.GetHeaderFromHeaders(msg.Headers(), HeaderCorrelationID)
@@ -67,29 +104,27 @@ func (p *ResponseProducer) startConsumer() {
 				correlationID = header.Value()
 			}
 		}
-
 		if correlationID == "" {
 			return nil
 		}
-
-		// Verificar si existe un future para este correlationID
 		future, exists := p.futures.Load(correlationID)
 		if !exists {
 			return nil
 		}
-
 		future.SetResponse(msg)
 		return nil
 	})
 }
+
 func (p *ResponseProducer) Name() string {
 	return p.name
 }
+
 func (p *ResponseProducer) GetReplyTopic() (string, error) {
 	return p.replyTopic, nil
 }
-func (p *ResponseProducer) Produce(topic string, key, value []byte, timeoutMs int) ([]byte, error) {
 
+func (p *ResponseProducer) Produce(topic string, key, value []byte, timeoutMs int) ([]byte, error) {
 	correlationID := uuid.NewString()
 	future := NewMessageFuture(correlationID, p.replyTopic)
 	p.futures.Store(correlationID, future)
@@ -107,7 +142,7 @@ func (p *ResponseProducer) Produce(topic string, key, value []byte, timeoutMs in
 	if err := p.kafkaProducer.Produce(msg, nil); err != nil {
 		return nil, err
 	}
-	// Aumentar el timeout a 10 segundos para dar suficiente tiempo para recibir respuestas
+
 	res, err := future.WaitResponse(timeoutMs)
 	if err != nil {
 		fmt.Printf("Error al recibir la respuesta: %v\n", err)
@@ -135,7 +170,6 @@ type MessageFuture struct {
 	correlationID string
 	response      chan types.Message
 	responseMsg   types.Message
-
 	responseTopic string
 	cancelChan    chan struct{}
 }
