@@ -9,7 +9,7 @@ import (
 	"github.com/Angeldadro/Katalyze/src/types"
 	"github.com/Angeldadro/Katalyze/src/utils"
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
-	"github.comcom/google/uuid"
+	"github.com/google/uuid"
 )
 
 const (
